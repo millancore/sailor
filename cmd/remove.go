@@ -83,12 +83,10 @@ func runRemove(cmd *cobra.Command, args []string) error {
 
 	// Drop database
 	if dbName != "" {
-		mainEnvPath := filepath.Join(root, ".env")
-		dbPassword := env.Get(mainEnvPath, "DB_PASSWORD", "password")
-		mysqlContainer, err := docker.FindMySQLContainer(root)
-		if err == nil && docker.MySQLIsReachable(mysqlContainer) {
+		dbInfo, dbErr := docker.DetectDB(root)
+		if dbErr == nil && docker.DBIsReachable(dbInfo) {
 			ui.Info("Dropping database: %s", dbName)
-			if err := docker.MySQLDropDB(mysqlContainer, dbPassword, dbName); err != nil {
+			if err := docker.DBDropDB(dbInfo, dbName); err != nil {
 				ui.Warn("Could not drop database: %v", err)
 			}
 		}
