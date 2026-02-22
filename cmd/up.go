@@ -45,9 +45,9 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	mysqlContainer, err := docker.FindMySQLContainer(root)
-	if err != nil || !docker.MySQLIsReachable(mysqlContainer) {
-		ui.Warn("MySQL is not reachable. Is your main branch running?")
+	dbInfo, dbErr := docker.DetectDB(root)
+	if dbErr != nil || !docker.DBIsReachable(dbInfo) {
+		ui.Warn("Database is not reachable. Is your main branch running?")
 		mainDir := root
 		fmt.Printf("  %s Start it with: cd %s && sail up -d\n", ui.Dim("→"), mainDir)
 		fmt.Println()
