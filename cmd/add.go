@@ -118,19 +118,18 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	mainEnvPath := filepath.Join(root, ".env")
 	sourceDB := env.Get(mainEnvPath, "DB_DATABASE", "laravel")
-	dbPassword := env.Get(mainEnvPath, "DB_PASSWORD", "password")
 	dbName := docker.SanitizeDBName(fmt.Sprintf("%s_%s", sourceDB, strings.ReplaceAll(branch, "/", "_")))
 
 	runMigrateLater := false
 
-	mysqlContainer, err := docker.FindMySQLContainer(root)
-	if err == nil && docker.MySQLIsReachable(mysqlContainer) {
+	dbInfo, dbErr := docker.DetectDB(root)
+	if dbErr == nil && docker.DBIsReachable(dbInfo) {
 		ui.Info("Creating database: %s", dbName)
-		if err := docker.MySQLCreateDB(mysqlContainer, dbPassword, dbName); err != nil {
+		if err := docker.DBCreateDB(dbInfo, dbName); err != nil {
 			ui.Error("Failed to create database: %v", err)
 		}
 
-		sourceHasTables := docker.MySQLHasTables(mysqlContainer, dbPassword, sourceDB)
+		sourceHasTables := docker.DBHasTables(dbInfo, sourceDB)
 
 		fmt.Println()
 		fmt.Printf("  %s\n", ui.Bold("How to populate the database?"))
@@ -154,9 +153,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		case "1":
 			if sourceHasTables {
 				ui.Info("Copying schema...")
-				dump, err := docker.MySQLDump(mysqlContainer, dbPassword, sourceDB, true)
+				dump, err := docker.DBDump(dbInfo, sourceDB, true)
 				if err == nil {
-					docker.MySQLImport(mysqlContainer, dbPassword, dbName, dump)
+					docker.DBImport(dbInfo, dbName, dump)
 					ui.Success("Schema copied")
 				} else {
 					ui.Error("Failed to dump schema: %v", err)
@@ -168,9 +167,9 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		case "2":
 			if sourceHasTables {
 				ui.Info("Copying schema + data...")
-				dump, err := docker.MySQLDump(mysqlContainer, dbPassword, sourceDB, false)
+				dump, err := docker.DBDump(dbInfo, sourceDB, false)
 				if err == nil {
-					docker.MySQLImport(mysqlContainer, dbPassword, dbName, dump)
+					docker.DBImport(dbInfo, dbName, dump)
 					ui.Success("Full copy done")
 				} else {
 					ui.Error("Failed to dump: %v", err)
@@ -189,7 +188,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			os.WriteFile(filepath.Join(absTarget, ".sailor-migrate"), []byte(""), 0644)
 		}
 	} else {
-		ui.Warn("MySQL not reachable — is the main branch running? (sail up -d)")
+		ui.Warn("Database not reachable — is the main branch running? (sail up -d)")
 		ui.Warn("Skipping DB setup.")
 	}
 

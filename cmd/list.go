@@ -38,8 +38,8 @@ func runList(cmd *cobra.Command, args []string) error {
 	mainShort := shortenHome(root)
 	mainStatus := ui.Red("stopped")
 
-	mysqlContainer, cErr := docker.FindMySQLContainer(root)
-	if cErr == nil && docker.MySQLIsReachable(mysqlContainer) {
+	dbInfo, cErr := docker.DetectDB(root)
+	if cErr == nil && docker.DBIsReachable(dbInfo) {
 		mainStatus = ui.Green("running (infra)")
 	}
 	fmt.Printf("  %s %s  %s  %s\n", ui.Green("●"), ui.Bold("main"), mainShort, mainStatus)
