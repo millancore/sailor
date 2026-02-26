@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -45,8 +46,8 @@ func ComposeUp(dir string, services ...string) error {
 	args = append(args, services...)
 	cmd := exec.Command("docker", args...)
 	cmd.Dir = dir
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 

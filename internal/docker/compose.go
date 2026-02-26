@@ -3,6 +3,7 @@ package docker
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -40,32 +41,6 @@ func (c *ComposeFile) Save() error {
 	return os.WriteFile(c.Path, data, 0644)
 }
 
-// Backup creates a backup of the compose file.
-func (c *ComposeFile) Backup() error {
-	backupPath := c.Path + BackupSuffix
-	if _, err := os.Stat(backupPath); err == nil {
-		return nil // backup already exists
-	}
-	data, err := os.ReadFile(c.Path)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(backupPath, data, 0644)
-}
-
-// RestoreBackup restores the compose file from backup.
-func RestoreBackup(composePath string) error {
-	backupPath := composePath + BackupSuffix
-	data, err := os.ReadFile(backupPath)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(composePath, data, 0644); err != nil {
-		return err
-	}
-	return os.Remove(backupPath)
-}
-
 // DetectAppService finds the app service name (usually laravel.test).
 func (c *ComposeFile) DetectAppService() string {
 	services := c.getServicesNode()
@@ -88,6 +63,41 @@ func (c *ComposeFile) DetectAppService() string {
 	return "laravel.test"
 }
 
+// DetectAppDependsOn returns the service names listed in the app service's depends_on.
+func (c *ComposeFile) DetectAppDependsOn(appService string) []string {
+	services := c.getServicesNode()
+	if services == nil {
+		return nil
+	}
+	for i := 0; i < len(services.Content)-1; i += 2 {
+		if services.Content[i].Value != appService {
+			continue
+		}
+		serviceBody := services.Content[i+1]
+		for j := 0; j < len(serviceBody.Content)-1; j += 2 {
+			if serviceBody.Content[j].Value != "depends_on" {
+				continue
+			}
+			depNode := serviceBody.Content[j+1]
+			var deps []string
+			switch depNode.Kind {
+			case yaml.SequenceNode:
+				// depends_on: [mysql, redis]
+				for _, item := range depNode.Content {
+					deps = append(deps, item.Value)
+				}
+			case yaml.MappingNode:
+				// depends_on: {mysql: {condition: ...}}
+				for k := 0; k < len(depNode.Content)-1; k += 2 {
+					deps = append(deps, depNode.Content[k].Value)
+				}
+			}
+			return deps
+		}
+	}
+	return nil
+}
+
 // DetectInfraServices returns all service names except the app service.
 func (c *ComposeFile) DetectInfraServices(appService string) []string {
 	services := c.getServicesNode()
@@ -105,64 +115,115 @@ func (c *ComposeFile) DetectInfraServices(appService string) []string {
 	return infra
 }
 
-// HasSharedNetwork checks if the compose file already has the shared network configured.
-func (c *ComposeFile) HasSharedNetwork(networkName string) bool {
+// detectFirstLocalNetwork returns the first non-external network key in the top-level networks section.
+func (c *ComposeFile) detectFirstLocalNetwork() string {
 	networks := c.getTopLevelMapping("networks")
 	if networks == nil {
-		return false
+		return ""
 	}
 	for i := 0; i < len(networks.Content)-1; i += 2 {
-		if networks.Content[i].Value == "shared" {
-			return true
+		key := networks.Content[i].Value
+		networkBody := networks.Content[i+1]
+		// Skip networks marked as external
+		isExternal := false
+		if networkBody != nil {
+			for j := 0; j < len(networkBody.Content)-1; j += 2 {
+				if networkBody.Content[j].Value == "external" {
+					val := networkBody.Content[j+1].Value
+					if val == "true" {
+						isExternal = true
+					}
+					break
+				}
+			}
+		}
+		if !isExternal {
+			return key
 		}
 	}
-	return false
+	return ""
 }
 
-// PatchMainCompose adds the shared network to all services and the top-level networks block.
-func (c *ComposeFile) PatchMainCompose(networkName string) error {
-	if c.HasSharedNetwork(networkName) {
-		return nil // already patched
+// WriteWorktreeOverride generates docker-compose.override.yml in dir.
+// The override disables infra services, patches app ports, and redefines
+// the sail network as external pointing at networkName.
+func WriteWorktreeOverride(dir string, appService string, infraServices []string, networkName string) error {
+	// Build services mapping node
+	servicesMapping := &yaml.Node{Kind: yaml.MappingNode}
+
+	// App service: clear depends_on (infra services are disabled via profiles).
+	// Ports are handled by APP_PORT and VITE_PORT in .env.
+	appServiceBody := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "depends_on"},
+			{Kind: yaml.MappingNode, Tag: "!reset"},
+		},
 	}
+	servicesMapping.Content = append(servicesMapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: appService},
+		appServiceBody,
+	)
 
-	services := c.getServicesNode()
-	if services == nil {
-		return fmt.Errorf("no 'services' found in %s", c.Path)
-	}
-
-	// Add "shared" to each service's networks list
-	for i := 0; i < len(services.Content)-1; i += 2 {
-		serviceBody := services.Content[i+1]
-		c.addNetworkToService(serviceBody, "shared")
-	}
-
-	// Add shared network definition to top-level networks
-	c.addSharedNetworkDefinition(networkName)
-
-	return nil
-}
-
-// PatchWorktreeCompose modifies the worktree's compose for app-only mode.
-func (c *ComposeFile) PatchWorktreeCompose(appService string, infraServices []string, appPort, vitePort int, networkName string) error {
-	services := c.getServicesNode()
-	if services == nil {
-		return fmt.Errorf("no 'services' found in %s", c.Path)
-	}
-
-	for i := 0; i < len(services.Content)-1; i += 2 {
-		name := services.Content[i].Value
-		serviceBody := services.Content[i+1]
-
-		if name == appService {
-			c.patchAppService(serviceBody, appPort, vitePort)
-		} else if contains(infraServices, name) {
-			c.disableService(serviceBody)
+	// Infra services: disable with profiles
+	for _, svc := range infraServices {
+		svcBody := &yaml.Node{
+			Kind: yaml.MappingNode,
+			Content: []*yaml.Node{
+				{Kind: yaml.ScalarNode, Value: "profiles"},
+				{
+					Kind: yaml.SequenceNode,
+					Content: []*yaml.Node{
+						{Kind: yaml.ScalarNode, Value: "disabled"},
+					},
+				},
+			},
 		}
+		servicesMapping.Content = append(servicesMapping.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: svc},
+			svcBody,
+		)
 	}
 
-	c.addSharedNetworkDefinition(networkName)
+	// Networks block: redefine sail as external
+	networksMapping := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "sail"},
+			{
+				Kind: yaml.MappingNode,
+				Content: []*yaml.Node{
+					{Kind: yaml.ScalarNode, Value: "external"},
+					{Kind: yaml.ScalarNode, Value: "true", Tag: "!!bool"},
+					{Kind: yaml.ScalarNode, Value: "name"},
+					{Kind: yaml.ScalarNode, Value: networkName},
+				},
+			},
+		},
+	}
 
-	return nil
+	// Root document
+	root := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "services"},
+			servicesMapping,
+			{Kind: yaml.ScalarNode, Value: "networks"},
+			networksMapping,
+		},
+	}
+
+	doc := &yaml.Node{
+		Kind:    yaml.DocumentNode,
+		Content: []*yaml.Node{root},
+	}
+
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filepath.Join(dir, "docker-compose.override.yml"), data, 0644)
 }
 
 // getServicesNode returns the mapping node under "services:".
@@ -184,140 +245,6 @@ func (c *ComposeFile) getTopLevelMapping(key string) *yaml.Node {
 	return nil
 }
 
-// addNetworkToService adds a network name to a service's networks list.
-func (c *ComposeFile) addNetworkToService(serviceBody *yaml.Node, network string) {
-	// Find existing networks key
-	for i := 0; i < len(serviceBody.Content)-1; i += 2 {
-		if serviceBody.Content[i].Value == "networks" {
-			netNode := serviceBody.Content[i+1]
-			// Check if already present
-			for _, item := range netNode.Content {
-				if item.Value == network {
-					return
-				}
-			}
-			netNode.Content = append(netNode.Content, &yaml.Node{
-				Kind:  yaml.ScalarNode,
-				Value: network,
-			})
-			return
-		}
-	}
-
-	// No networks key — add one
-	serviceBody.Content = append(serviceBody.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: "networks"},
-		&yaml.Node{
-			Kind: yaml.SequenceNode,
-			Content: []*yaml.Node{
-				{Kind: yaml.ScalarNode, Value: "sail"},
-				{Kind: yaml.ScalarNode, Value: network},
-			},
-		},
-	)
-}
-
-// addSharedNetworkDefinition adds the shared external network to top-level networks.
-func (c *ComposeFile) addSharedNetworkDefinition(networkName string) {
-	root := c.Root.Content[0]
-	var networksNode *yaml.Node
-
-	for i := 0; i < len(root.Content)-1; i += 2 {
-		if root.Content[i].Value == "networks" {
-			networksNode = root.Content[i+1]
-			break
-		}
-	}
-
-	if networksNode == nil {
-		// Create networks top-level key
-		networksNode = &yaml.Node{Kind: yaml.MappingNode}
-		root.Content = append(root.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Value: "networks"},
-			networksNode,
-		)
-	}
-
-	// Check if shared already exists
-	for i := 0; i < len(networksNode.Content)-1; i += 2 {
-		if networksNode.Content[i].Value == "shared" {
-			return
-		}
-	}
-
-	// Add shared network
-	networksNode.Content = append(networksNode.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: "shared"},
-		&yaml.Node{
-			Kind: yaml.MappingNode,
-			Content: []*yaml.Node{
-				{Kind: yaml.ScalarNode, Value: "external"},
-				{Kind: yaml.ScalarNode, Value: "true", Tag: "!!bool"},
-				{Kind: yaml.ScalarNode, Value: "name"},
-				{Kind: yaml.ScalarNode, Value: networkName},
-			},
-		},
-	)
-}
-
-// patchAppService modifies the app service for worktree mode.
-func (c *ComposeFile) patchAppService(serviceBody *yaml.Node, appPort, vitePort int) {
-	for i := 0; i < len(serviceBody.Content)-1; i += 2 {
-		key := serviceBody.Content[i].Value
-
-		switch key {
-		case "ports":
-			// Replace ports
-			serviceBody.Content[i+1] = &yaml.Node{
-				Kind: yaml.SequenceNode,
-				Content: []*yaml.Node{
-					{Kind: yaml.ScalarNode, Value: fmt.Sprintf("%d:80", appPort), Style: yaml.SingleQuotedStyle},
-					{Kind: yaml.ScalarNode, Value: fmt.Sprintf("%d:5173", vitePort), Style: yaml.SingleQuotedStyle},
-				},
-			}
-		case "networks":
-			// Replace networks with only shared
-			serviceBody.Content[i+1] = &yaml.Node{
-				Kind: yaml.SequenceNode,
-				Content: []*yaml.Node{
-					{Kind: yaml.ScalarNode, Value: "shared"},
-				},
-			}
-		case "depends_on":
-			// Clear depends_on
-			serviceBody.Content[i+1] = &yaml.Node{
-				Kind: yaml.SequenceNode,
-			}
-		}
-	}
-}
-
-// disableService adds profiles: ['disabled'] to a service.
-func (c *ComposeFile) disableService(serviceBody *yaml.Node) {
-	// Check if profiles already set
-	for i := 0; i < len(serviceBody.Content)-1; i += 2 {
-		if serviceBody.Content[i].Value == "profiles" {
-			serviceBody.Content[i+1] = &yaml.Node{
-				Kind: yaml.SequenceNode,
-				Content: []*yaml.Node{
-					{Kind: yaml.ScalarNode, Value: "disabled"},
-				},
-			}
-			return
-		}
-	}
-
-	serviceBody.Content = append(serviceBody.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: "profiles"},
-		&yaml.Node{
-			Kind: yaml.SequenceNode,
-			Content: []*yaml.Node{
-				{Kind: yaml.ScalarNode, Value: "disabled"},
-			},
-		},
-	)
-}
-
 // SanitizeDBName cleans a string for use as a database name.
 func SanitizeDBName(name string) string {
 	name = strings.ReplaceAll(name, "/", "_")
@@ -333,13 +260,4 @@ func SanitizeDBName(name string) string {
 		result = result[:64]
 	}
 	return result
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

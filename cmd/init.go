@@ -12,16 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var forceInit bool
-
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Setup shared network and patch main docker-compose.yml",
+	Short: "Validate Sail is running and show usage instructions",
 	RunE:  runInit,
-}
-
-func init() {
-	initCmd.Flags().BoolVar(&forceInit, "force", false, "Reinitialize even if already patched")
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -37,19 +31,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	ui.Header("Initializing sailor")
 
-	// Parse compose file
+	// Parse compose to detect services (informational only)
 	compose, err := docker.ParseCompose(composePath)
 	if err != nil {
 		return err
 	}
 
-	// Check if already initialized
-	if compose.HasSharedNetwork(docker.SharedNetworkName) && !forceInit {
-		ui.Warn("Already initialized. Use --force to reinitialize.")
-		return nil
-	}
-
-	// Detect services
 	appService := compose.DetectAppService()
 	infraServices := compose.DetectInfraServices(appService)
 
@@ -60,35 +47,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 		ui.Warn("No infra services detected in docker-compose.yml")
 	}
 
-	// Create shared network
-	created, err := docker.EnsureNetwork(docker.SharedNetworkName)
+	// Detect Sail's existing network (validates that Sail is running)
+	networkName, err := docker.DetectSailNetwork(root)
 	if err != nil {
-		return fmt.Errorf("failed to create Docker network: %w", err)
+		return fmt.Errorf("could not detect Sail network: %w\n  Make sure your main branch is running: sail up -d", err)
 	}
-	if created {
-		ui.Success("Created Docker network: %s", docker.SharedNetworkName)
-	} else {
-		ui.Info("Docker network '%s' already exists", docker.SharedNetworkName)
-	}
+	ui.Info("Detected Sail network: %s", networkName)
 
-	// Backup and patch docker-compose.yml
-	if err := compose.Backup(); err != nil {
-		return fmt.Errorf("failed to backup docker-compose.yml: %w", err)
-	}
-	ui.Success("Backup created: docker-compose.yml%s", docker.BackupSuffix)
+	// Add docker-compose.override.yml to .gitignore
+	addToGitignore(root, "docker-compose.override.yml")
 
-	if err := compose.PatchMainCompose(docker.SharedNetworkName); err != nil {
-		return fmt.Errorf("failed to patch docker-compose.yml: %w", err)
-	}
-	if err := compose.Save(); err != nil {
-		return fmt.Errorf("failed to save docker-compose.yml: %w", err)
-	}
-	ui.Success("Patched docker-compose.yml with shared network")
-
-	// Add backup to .gitignore
-	addToGitignore(root, "docker-compose.yml"+docker.BackupSuffix)
-
-	ui.Success("Initialized!")
+	ui.Success("Ready!")
 	fmt.Println()
 	fmt.Printf("  %s\n", ui.Bold("How to use:"))
 	fmt.Println()

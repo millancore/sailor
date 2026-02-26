@@ -36,18 +36,16 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Verify main is initialized
+	// Parse main compose to detect services
 	composePath := filepath.Join(root, "docker-compose.yml")
 	compose, err := docker.ParseCompose(composePath)
 	if err != nil {
 		return err
 	}
-	if !compose.HasSharedNetwork(docker.SharedNetworkName) {
-		return fmt.Errorf("not initialized. Run 'sailor init' first")
-	}
 
 	appService := compose.DetectAppService()
 	infraServices := compose.DetectInfraServices(appService)
+
 
 	// Resolve target directory
 	var targetDir string
@@ -224,23 +222,19 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		ui.Warn("No .env created — configure manually")
 	}
 
-	// ── 5. Patch worktree compose ──
-	ui.Header("5/5  Patching docker-compose.yml")
+	// ── 5. Write docker-compose.override.yml ──
+	ui.Header("5/5  Writing docker-compose.override.yml")
 
-	wtComposePath := filepath.Join(absTarget, "docker-compose.yml")
-	wtCompose, err := docker.ParseCompose(wtComposePath)
-	if err != nil {
-		ui.Warn("Cannot parse worktree docker-compose.yml: %v", err)
+	networkName, netErr := docker.DetectSailNetwork(root)
+	if netErr != nil {
+		ui.Warn("Could not detect Sail network: %v", netErr)
+		ui.Warn("Make sure your main branch is running: sail up -d")
 	} else {
-		if err := wtCompose.Backup(); err != nil {
-			ui.Warn("Failed to backup: %v", err)
-		}
-		if err := wtCompose.PatchWorktreeCompose(appService, infraServices, appPort, vitePort, docker.SharedNetworkName); err != nil {
-			ui.Warn("Failed to patch: %v", err)
-		} else if err := wtCompose.Save(); err != nil {
-			ui.Warn("Failed to save: %v", err)
+		if err := docker.WriteWorktreeOverride(absTarget, appService, infraServices, networkName); err != nil {
+			ui.Warn("Failed to write override: %v", err)
 		} else {
-			ui.Success("Patched docker-compose.yml")
+			ui.Success("Created docker-compose.override.yml")
+			addToGitignore(absTarget, "docker-compose.override.yml")
 		}
 	}
 
