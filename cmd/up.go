@@ -35,14 +35,15 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no docker-compose.yml in %s", absTarget)
 	}
 
-	if !docker.NetworkExists(docker.SharedNetworkName) {
-		return fmt.Errorf("shared network '%s' not found. Run 'sailor init' first", docker.SharedNetworkName)
-	}
-
 	// Check MySQL reachability
 	root, err := git.FindRoot()
 	if err != nil {
 		return err
+	}
+
+	// Verify the sail network exists
+	if _, err := docker.DetectSailNetwork(root); err != nil {
+		return fmt.Errorf("sail network not found. Is your main branch running? (sail up -d)")
 	}
 
 	dbInfo, dbErr := docker.DetectDB(root)
@@ -60,13 +61,12 @@ func runUp(cmd *cobra.Command, args []string) error {
 
 	ui.Header("Starting app container")
 
-	// Detect app service from main compose
-	composePath := filepath.Join(root, "docker-compose.yml")
-	compose, err := docker.ParseCompose(composePath)
+	mainComposePath := filepath.Join(root, "docker-compose.yml")
+	mainCompose, err := docker.ParseCompose(mainComposePath)
 	if err != nil {
 		return err
 	}
-	appService := compose.DetectAppService()
+	appService := mainCompose.DetectAppService()
 
 	if err := docker.ComposeUp(absTarget, appService); err != nil {
 		return fmt.Errorf("failed to start: %w", err)

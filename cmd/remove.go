@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -92,9 +93,8 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Restore compose backup
-	composePath := filepath.Join(found.Path, "docker-compose.yml")
-	docker.RestoreBackup(composePath) // best-effort
+	// Remove override file (best-effort)
+	os.Remove(filepath.Join(found.Path, "docker-compose.override.yml"))
 
 	// Remove git worktree
 	ui.Info("Removing git worktree...")
