@@ -35,7 +35,6 @@ func runUp(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no docker-compose.yml in %s", absTarget)
 	}
 
-	// Check MySQL reachability
 	root, err := git.FindRoot()
 	if err != nil {
 		return err
@@ -49,17 +48,14 @@ func runUp(cmd *cobra.Command, args []string) error {
 	dbInfo, dbErr := docker.DetectDB(root)
 	if dbErr != nil || !docker.DBIsReachable(dbInfo) {
 		ui.Warn("Database is not reachable. Is your main branch running?")
-		mainDir := root
-		fmt.Printf("  %s Start it with: cd %s && sail up -d\n", ui.Dim("→"), mainDir)
+		fmt.Printf("  %s Start it with: cd %s && sail up -d\n", ui.Dim("→"), root)
 		fmt.Println()
-		fmt.Print("  Continue anyway? [y/N] ")
-		answer := readLine()
-		if answer == "" || answer[0] != 'y' && answer[0] != 'Y' {
+
+		confirmed, err := ui.Confirm("Continue anyway?", "")
+		if err != nil || !confirmed {
 			return nil
 		}
 	}
-
-	ui.Header("Starting app container")
 
 	mainComposePath := filepath.Join(root, "docker-compose.yml")
 	mainCompose, err := docker.ParseCompose(mainComposePath)
@@ -68,25 +64,30 @@ func runUp(cmd *cobra.Command, args []string) error {
 	}
 	appService := mainCompose.DetectAppService()
 
-	if err := docker.ComposeUp(absTarget, appService); err != nil {
+	if err := ui.Spin("Starting container", func() error {
+		return docker.ComposeUp(absTarget, appService)
+	}); err != nil {
 		return fmt.Errorf("failed to start: %w", err)
 	}
 
 	// Run pending migrations
 	migrateMarker := filepath.Join(absTarget, ".sailor-migrate")
 	if _, err := os.Stat(migrateMarker); err == nil {
-		ui.Info("Running migrate --seed...")
 		time.Sleep(3 * time.Second)
-		if err := docker.ComposeExec(absTarget, appService, "php", "artisan", "migrate", "--seed", "--force"); err != nil {
+		if err := ui.Spin("Running migrations", func() error {
+			return docker.ComposeExec(absTarget, appService, "php", "artisan", "migrate", "--seed", "--force")
+		}); err != nil {
 			ui.Warn("Migration failed — run manually")
 		}
 		os.Remove(migrateMarker)
 	}
 
 	ui.Success("App is running")
+
 	envPath := filepath.Join(absTarget, ".env")
 	if url := env.Get(envPath, "APP_URL", ""); url != "" {
-		fmt.Printf("  %s %s\n", ui.Dim("→"), url)
+		fmt.Println()
+		fmt.Println(ui.SummaryBox("", []string{url}))
 	}
 
 	return nil

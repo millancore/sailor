@@ -27,9 +27,6 @@ func runPorts(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ui.Header("Port Map")
-	fmt.Println()
-
 	// Filter worktrees (exclude main)
 	var wts []git.Worktree
 	for _, wt := range worktrees {
@@ -43,19 +40,19 @@ func runPorts(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("  %-22s %6s %6s %-25s\n",
-		ui.Bold("BRANCH"), ui.Bold("APP"), ui.Bold("VITE"), ui.Bold("DATABASE"))
-	fmt.Printf("  %-22s %6s %6s %-25s\n",
-		ui.Dim("──────"), ui.Dim("───"), ui.Dim("────"), ui.Dim("────────"))
+	headers := []string{"BRANCH", "APP PORT", "VITE PORT", "DATABASE"}
+	rows := make([][]string, 0, len(wts))
 
 	for _, wt := range wts {
 		envPath := filepath.Join(wt.Path, ".env")
 		appPort := env.Get(envPath, "APP_PORT", "?")
 		vitePort := env.Get(envPath, "VITE_PORT", "?")
 		dbName := env.Get(envPath, "DB_DATABASE", "?")
-
-		fmt.Printf("  %-22s %6s %6s %-25s\n", wt.Branch, appPort, vitePort, dbName)
+		rows = append(rows, []string{wt.Branch, appPort, vitePort, dbName})
 	}
+
+	fmt.Println()
+	fmt.Println(ui.Table(headers, rows))
 
 	return nil
 }

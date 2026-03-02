@@ -48,7 +48,6 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	if found == nil {
-		// Try matching branch with / replaced
 		for i, wt := range worktrees {
 			if wt.Path == root {
 				continue
@@ -67,27 +66,35 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	envPath := filepath.Join(found.Path, ".env")
 	dbName := env.Get(envPath, "DB_DATABASE", "")
 
-	ui.Header("Removing worktree")
+	fmt.Println()
 	fmt.Printf("  %s %s\n", ui.Dim("Directory:"), found.Path)
 	fmt.Printf("  %s  %s\n", ui.Dim("Database:"), orNone(dbName))
 	fmt.Println()
-	fmt.Print("  Continue? [y/N] ")
-	answer := readLine()
-	if answer == "" || (answer[0] != 'y' && answer[0] != 'Y') {
+
+	confirmed, err := ui.Confirm(
+		"Remove this worktree?",
+		"This will stop the container, drop the database, and delete the worktree.",
+	)
+	if err != nil || !confirmed {
 		ui.Info("Cancelled")
 		return nil
 	}
 
 	// Stop container
-	ui.Info("Stopping container...")
-	docker.ComposeDown(found.Path)
+	if err := ui.Spin("Stopping container", func() error {
+		docker.ComposeDown(found.Path)
+		return nil
+	}); err != nil {
+		return err
+	}
 
 	// Drop database
 	if dbName != "" {
 		dbInfo, dbErr := docker.DetectDB(root)
 		if dbErr == nil && docker.DBIsReachable(dbInfo) {
-			ui.Info("Dropping database: %s", dbName)
-			if err := docker.DBDropDB(dbInfo, dbName); err != nil {
+			if err := ui.Spin(fmt.Sprintf("Dropping database: %s", dbName), func() error {
+				return docker.DBDropDB(dbInfo, dbName)
+			}); err != nil {
 				ui.Warn("Could not drop database: %v", err)
 			}
 		}
@@ -97,8 +104,9 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	os.Remove(filepath.Join(found.Path, "docker-compose.override.yml"))
 
 	// Remove git worktree
-	ui.Info("Removing git worktree...")
-	if err := git.Remove(root, found.Path); err != nil {
+	if err := ui.Spin("Removing git worktree", func() error {
+		return git.Remove(root, found.Path)
+	}); err != nil {
 		ui.Warn("Failed to remove worktree: %v", err)
 	}
 

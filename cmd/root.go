@@ -3,19 +3,14 @@ package cmd
 import (
 	"os"
 
+	"github.com/millancore/sailor/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "sailor",
 	Short: "Run multiple Laravel Sail branches in parallel",
-	Long: `sailor — Run multiple Laravel Sail branches in parallel
-
-Architecture:
-  - Your MAIN branch runs the full Sail stack (MySQL, Redis, etc.) as usual
-  - Each WORKTREE runs ONLY the app container, connected to the main Sail network
-  - Each worktree gets its own database (same MySQL instance)
-  - Dependencies are copied (independent per worktree)`,
+	Long:  ui.Banner(),
 }
 
 func Execute() {
