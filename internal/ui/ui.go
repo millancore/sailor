@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -181,23 +182,34 @@ func (m spinnerModel) View() tea.View {
 
 // Spin runs fn() while showing an animated spinner. Returns fn's error.
 func Spin(label string, fn func() error) error {
+	var (
+		once    sync.Once
+		fnErr   error
+	)
+	wrapped := func() error {
+		once.Do(func() { fnErr = fn() })
+		return fnErr
+	}
+
 	s := spinner.New(spinner.WithStyle(primaryStyle))
 	s.Spinner = spinner.Dot
 
-	m := spinnerModel{spinner: s, label: label, fn: fn}
+	m := spinnerModel{spinner: s, label: label, fn: wrapped}
 
 	p := tea.NewProgram(m, tea.WithoutSignalHandler())
 	finalModel, err := p.Run()
 	if err != nil {
-		return fn()
+		// BubbleTea failed to start; run fn if it hasn't run yet.
+		once.Do(func() { fnErr = fn() })
+		return fnErr
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) // allow terminal to flush final frame
 
 	if fm, ok := finalModel.(spinnerModel); ok {
 		return fm.err
 	}
-	return nil
+	return fnErr
 }
 
 // ── Confirm ────────────────────────────────────────────────────────────────
