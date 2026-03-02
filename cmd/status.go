@@ -27,20 +27,21 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// Main branch
-	ui.Header("Main Branch (Infrastructure)")
+	ui.Section("Main Branch (Infrastructure)")
 	containers, err := docker.ComposePS(root)
 	if err != nil || len(containers) == 0 {
 		fmt.Println("  (not running)")
 	} else {
-		fmt.Printf("  %-30s %-15s %s\n", ui.Bold("NAME"), ui.Bold("STATUS"), ui.Bold("PORTS"))
+		headers := []string{"NAME", "STATUS", "PORTS"}
+		rows := make([][]string, 0, len(containers))
 		for _, c := range containers {
-			fmt.Printf("  %-30s %-15s %s\n", c.Name, c.Status, c.Ports)
+			rows = append(rows, []string{c.Name, c.Status, c.Ports})
 		}
+		fmt.Println(ui.Table(headers, rows))
 	}
 
 	// Worktrees
-	ui.Header("Worktree App Containers")
-	fmt.Println()
+	ui.Section("Worktree App Containers")
 
 	for _, wt := range worktrees {
 		if wt.Path == root {
@@ -52,9 +53,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if err != nil || len(containers) == 0 {
 			fmt.Println("    (not running)")
 		} else {
+			headers := []string{"NAME", "STATUS", "PORTS"}
+			rows := make([][]string, 0, len(containers))
 			for _, c := range containers {
-				fmt.Printf("    %-30s %-15s %s\n", c.Name, c.Status, c.Ports)
+				rows = append(rows, []string{c.Name, c.Status, c.Ports})
 			}
+			fmt.Println(ui.Table(headers, rows))
 		}
 		fmt.Println()
 	}

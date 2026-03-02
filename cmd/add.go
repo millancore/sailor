@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,7 +45,6 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	appService := compose.DetectAppService()
 	infraServices := compose.DetectInfraServices(appService)
 
-
 	// Resolve target directory
 	var targetDir string
 	if len(args) > 1 {
@@ -74,9 +72,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// Branch check
 	if !git.BranchExists(root, branch) {
 		ui.Warn("Branch '%s' does not exist.", branch)
-		fmt.Print("  Create from current HEAD? [Y/n] ")
-		answer := readLine()
-		if answer != "" && !strings.HasPrefix(strings.ToLower(answer), "y") {
+		confirmed, err := ui.Confirm("Create from current HEAD?", "")
+		if err != nil || !confirmed {
 			return fmt.Errorf("cancelled")
 		}
 		if err := git.CreateBranch(root, branch); err != nil {
@@ -86,15 +83,22 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── 1. Git worktree ──
-	ui.Header("1/5  Creating git worktree")
-	if err := git.Add(root, absTarget, branch); err != nil {
+	ui.Step(1, 5, "Creating git worktree")
+	if err := ui.Spin("Creating git worktree", func() error {
+		return git.Add(root, absTarget, branch)
+	}); err != nil {
 		return fmt.Errorf("git worktree add failed: %w", err)
 	}
-	ui.Success("Worktree at %s", absTarget)
 
 	// ── 2. Copy dependencies ──
-	ui.Header("2/5  Copying dependencies")
-	needComposer, needNpm := deps.CopyDeps(root, absTarget)
+	ui.Step(2, 5, "Copying dependencies")
+	var needComposer, needNpm bool
+	if err := ui.Spin("Copying dependencies", func() error {
+		needComposer, needNpm = deps.CopyDeps(root, absTarget)
+		return nil
+	}); err != nil {
+		return err
+	}
 
 	if !needComposer {
 		ui.Success("vendor/ copied — lock files match")
@@ -112,7 +116,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	deps.EnsureStorageDirs(absTarget)
 
 	// ── 3. Database ──
-	ui.Header("3/5  Setting up database")
+	ui.Step(3, 5, "Setting up database")
 
 	mainEnvPath := filepath.Join(root, ".env")
 	sourceDB := env.Get(mainEnvPath, "DB_DATABASE", "laravel")
@@ -129,34 +133,37 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 		sourceHasTables := docker.DBHasTables(dbInfo, sourceDB)
 
-		fmt.Println()
-		fmt.Printf("  %s\n", ui.Bold("How to populate the database?"))
+		var opts []ui.SelectOption
 		if sourceHasTables {
-			fmt.Printf("    %s Schema only from '%s' %s\n", ui.Cyan("1)"), sourceDB, ui.Dim("(fast)"))
-			fmt.Printf("    %s Schema + data from '%s' %s\n", ui.Cyan("2)"), sourceDB, ui.Dim("(snapshot)"))
+			opts = []ui.SelectOption{
+				{Label: fmt.Sprintf("Schema only from '%s'", sourceDB), Description: "Copy table structure only, no data", Value: "1"},
+				{Label: fmt.Sprintf("Snapshot from '%s'", sourceDB), Description: "Copy table structure and all data", Value: "2"},
+				{Label: "migrate --seed", Description: "Fresh migrations and seeders, validates your migration files", Value: "3"},
+				{Label: "Skip", Description: "Leave the database empty", Value: "4"},
+			}
 		} else {
-			fmt.Printf("    %s Schema only — source has no tables\n", ui.Dim("1)"))
-			fmt.Printf("    %s Schema + data — source has no tables\n", ui.Dim("2)"))
+			opts = []ui.SelectOption{
+				{Label: fmt.Sprintf("Schema only from '%s'", sourceDB), Description: "Source has no tables — will run on an empty database", Value: "1"},
+				{Label: fmt.Sprintf("Snapshot from '%s'", sourceDB), Description: "Source has no tables — will run on an empty database", Value: "2"},
+				{Label: "migrate --seed", Description: "Fresh migrations and seeders, validates your migration files", Value: "3"},
+				{Label: "Skip", Description: "Leave the database empty", Value: "4"},
+			}
 		}
-		fmt.Printf("    %s migrate --seed %s\n", ui.Cyan("3)"), ui.Dim("(clean, validates migrations)"))
-		fmt.Printf("    %s Skip\n", ui.Cyan("4)"))
-		fmt.Println()
-		fmt.Print("  Choice [1]: ")
-		choice := readLine()
-		if choice == "" {
-			choice = "1"
-		}
+		dbChoice, _ := ui.Select("How to populate the database?", opts, "1")
 
-		switch choice {
+		switch dbChoice {
 		case "1":
 			if sourceHasTables {
-				ui.Info("Copying schema...")
-				dump, err := docker.DBDump(dbInfo, sourceDB, true)
-				if err == nil {
-					docker.DBImport(dbInfo, dbName, dump)
-					ui.Success("Schema copied")
+				if err := ui.Spin("Copying schema", func() error {
+					dump, err := docker.DBDump(dbInfo, sourceDB, true)
+					if err != nil {
+						return err
+					}
+					return docker.DBImport(dbInfo, dbName, dump)
+				}); err != nil {
+					ui.Error("Failed to copy schema: %v", err)
 				} else {
-					ui.Error("Failed to dump schema: %v", err)
+					ui.Success("Schema copied")
 				}
 			} else {
 				ui.Warn("No tables in source — will migrate --seed after start")
@@ -164,13 +171,16 @@ func runAdd(cmd *cobra.Command, args []string) error {
 			}
 		case "2":
 			if sourceHasTables {
-				ui.Info("Copying schema + data...")
-				dump, err := docker.DBDump(dbInfo, sourceDB, false)
-				if err == nil {
-					docker.DBImport(dbInfo, dbName, dump)
-					ui.Success("Full copy done")
+				if err := ui.Spin("Copying schema + data", func() error {
+					dump, err := docker.DBDump(dbInfo, sourceDB, false)
+					if err != nil {
+						return err
+					}
+					return docker.DBImport(dbInfo, dbName, dump)
+				}); err != nil {
+					ui.Error("Failed to copy data: %v", err)
 				} else {
-					ui.Error("Failed to dump: %v", err)
+					ui.Success("Full copy done")
 				}
 			} else {
 				ui.Warn("No tables in source — will migrate --seed after start")
@@ -191,11 +201,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── 4. Configure .env ──
-	ui.Header("4/5  Configuring .env")
+	ui.Step(4, 5, "Configuring .env")
 
 	appPort, vitePort := allocatePorts(root)
 
-	// Copy .env from main
 	envSrc := filepath.Join(root, ".env")
 	envDst := filepath.Join(absTarget, ".env")
 	if _, err := os.Stat(envSrc); err == nil {
@@ -223,7 +232,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── 5. Write docker-compose.override.yml ──
-	ui.Header("5/5  Writing docker-compose.override.yml")
+	ui.Step(5, 5, "Writing docker-compose.override.yml")
 
 	networkName, netErr := docker.DetectSailNetwork(root)
 	if netErr != nil {
@@ -238,16 +247,17 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// ── Done ──
-	ui.Header("Ready!")
+	// ── Done — summary box ──
 	fmt.Println()
-	fmt.Printf("  %s    %s\n", ui.Dim("Branch:"), branch)
-	fmt.Printf("  %s %s\n", ui.Dim("Directory:"), absTarget)
-	fmt.Printf("  %s  %s\n", ui.Dim("Database:"), dbName)
-	fmt.Printf("  %s   http://localhost:%d\n", ui.Dim("App URL:"), appPort)
-	fmt.Printf("  %s      localhost:%d\n", ui.Dim("Vite:"), vitePort)
-	fmt.Println()
-	fmt.Printf("  %s cd %s && sailor up\n", ui.Bold("Start:"), absTarget)
+	fmt.Println(ui.SummaryBox("Ready!", []string{
+		fmt.Sprintf("%s    %s", ui.Dim("Branch:"), branch),
+		fmt.Sprintf("%s %s", ui.Dim("Directory:"), absTarget),
+		fmt.Sprintf("%s  %s", ui.Dim("Database:"), dbName),
+		fmt.Sprintf("%s   %s", ui.Dim("App URL:"), fmt.Sprintf("http://localhost:%d", appPort)),
+		fmt.Sprintf("%s      %s", ui.Dim("Vite:"), fmt.Sprintf("localhost:%d", vitePort)),
+		"",
+		fmt.Sprintf("%s cd %s && sailor up", ui.Bold("Start:"), absTarget),
+	}))
 
 	return nil
 }
@@ -296,27 +306,23 @@ func parsePort(s string) int {
 	return p
 }
 
-func readLine() string {
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	return strings.TrimSpace(line)
-}
-
 func runInstall(dir, tool string) {
 	switch tool {
 	case "composer":
 		if _, err := os.Stat(filepath.Join(dir, "composer.json")); err == nil {
-			ui.Info("Running composer install...")
-			cmd := fmt.Sprintf("cd %s && composer install --quiet 2>/dev/null", dir)
-			if err := execShell(cmd); err != nil {
+			if err := ui.Spin("Running composer install", func() error {
+				cmd := fmt.Sprintf("cd %s && composer install --quiet 2>/dev/null", dir)
+				return execShell(cmd)
+			}); err != nil {
 				ui.Warn("composer install failed — run manually")
 			}
 		}
 	case "npm":
 		if _, err := os.Stat(filepath.Join(dir, "package.json")); err == nil {
-			ui.Info("Running npm install...")
-			cmd := fmt.Sprintf("cd %s && npm install --silent 2>/dev/null", dir)
-			if err := execShell(cmd); err != nil {
+			if err := ui.Spin("Running npm install", func() error {
+				cmd := fmt.Sprintf("cd %s && npm install --silent 2>/dev/null", dir)
+				return execShell(cmd)
+			}); err != nil {
 				ui.Warn("npm install failed — run manually")
 			}
 		}

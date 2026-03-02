@@ -26,7 +26,12 @@ func runDown(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	docker.ComposeDown(absTarget)
+	if err := ui.Spin("Stopping container", func() error {
+		docker.ComposeDown(absTarget)
+		return nil
+	}); err != nil {
+		return err
+	}
 	ui.Success("Stopped: %s", absTarget)
 	return nil
 }

@@ -31,37 +31,29 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ui.Header("Worktrees")
-	fmt.Println()
-
-	// Main branch
-	mainShort := shortenHome(root)
-	mainStatus := ui.Red("stopped")
-
-	dbInfo, cErr := docker.DetectDB(root)
-	if cErr == nil && docker.DBIsReachable(dbInfo) {
-		mainStatus = ui.Green("running (infra)")
-	}
-	fmt.Printf("  %s %s  %s  %s\n", ui.Green("●"), ui.Bold("main"), mainShort, mainStatus)
-	fmt.Println()
-
-	// Filter worktrees (exclude main)
+	// Separate head worktree from linked ones
+	var head git.Worktree
 	var wts []git.Worktree
 	for _, wt := range worktrees {
-		if wt.Path != root {
+		if wt.Path == root {
+			head = wt
+		} else {
 			wts = append(wts, wt)
 		}
 	}
 
-	if len(wts) == 0 {
-		ui.Info("No worktrees. Use 'sailor add <branch>'.")
-		return nil
+	// Print head branch info above the table
+	headStatus := ui.Red("stopped")
+	dbInfo, cErr := docker.DetectDB(root)
+	if cErr == nil && docker.DBIsReachable(dbInfo) {
+		headStatus = ui.Green("running (infra)")
 	}
+	fmt.Printf("\n  %s  %s  %s\n", ui.Bold(head.Branch), ui.Dim(shortenHome(head.Path)), headStatus)
 
-	fmt.Printf("  %-22s %-30s %-6s %-25s %-8s\n",
-		ui.Bold("BRANCH"), ui.Bold("DIRECTORY"), ui.Bold("PORT"), ui.Bold("DATABASE"), ui.Bold("STATUS"))
-	fmt.Printf("  %-22s %-30s %-6s %-25s %-8s\n",
-		ui.Dim("──────"), ui.Dim("─────────"), ui.Dim("────"), ui.Dim("────────"), ui.Dim("──────"))
+	// Build table rows
+	headers := []string{"BRANCH", "DIRECTORY", "PORT", "DATABASE", "STATUS", "URL"}
+
+	var rows [][]string
 
 	for _, wt := range wts {
 		shortDir := shortenHome(wt.Path)
@@ -80,11 +72,26 @@ func runList(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		fmt.Printf("  %-22s %-30s %-6s %-25s %s\n", wt.Branch, shortDir, appPort, dbName, status)
+		urlCell := "—"
+		if appPort != "?" {
+			rawURL := "http://localhost:" + appPort
+			urlCell = ui.Link(rawURL, rawURL)
+		}
+
+		rows = append(rows, []string{wt.Branch, shortDir, appPort, dbName, status, urlCell})
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Table(headers, rows))
+
+	if len(wts) == 0 {
+		fmt.Println()
+		ui.Info("No worktrees. Use 'sailor add <branch>'.")
 	}
 
 	return nil
 }
+
 
 func shortenHome(path string) string {
 	home, err := os.UserHomeDir()
