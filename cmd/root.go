@@ -27,4 +27,5 @@ func init() {
 	rootCmd.AddCommand(portsCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(removeCmd)
+	rootCmd.AddCommand(pruneCmd)
 }
