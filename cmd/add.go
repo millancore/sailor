@@ -126,70 +126,77 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	dbInfo, dbErr := docker.DetectDB(root)
 	if dbErr == nil && docker.DBIsReachable(dbInfo) {
-		ui.Info("Creating database: %s", dbName)
-		if err := docker.DBCreateDB(dbInfo, dbName); err != nil {
-			ui.Error("Failed to create database: %v", err)
-		}
-
 		sourceHasTables := docker.DBHasTables(dbInfo, sourceDB)
 
 		var opts []ui.SelectOption
 		if sourceHasTables {
 			opts = []ui.SelectOption{
-				{Label: fmt.Sprintf("Schema only from '%s'", sourceDB), Description: "Copy table structure only, no data", Value: "1"},
+				{Label: "migrate --seed", Description: "Fresh migrations and seeders, validates your migration files", Value: "1"},
 				{Label: fmt.Sprintf("Snapshot from '%s'", sourceDB), Description: "Copy table structure and all data", Value: "2"},
-				{Label: "migrate --seed", Description: "Fresh migrations and seeders, validates your migration files", Value: "3"},
-				{Label: "Skip", Description: "Leave the database empty", Value: "4"},
+				{Label: fmt.Sprintf("Schema only from '%s'", sourceDB), Description: "Copy table structure only, no data", Value: "3"},
+				{Label: fmt.Sprintf("Share '%s'", sourceDB), Description: "Reuse the main branch database, no copy", Value: "4"},
+				{Label: "Skip", Description: "Leave the database empty", Value: "5"},
 			}
 		} else {
 			opts = []ui.SelectOption{
-				{Label: fmt.Sprintf("Schema only from '%s'", sourceDB), Description: "Source has no tables — will run on an empty database", Value: "1"},
+				{Label: "migrate --seed", Description: "Fresh migrations and seeders, validates your migration files", Value: "1"},
 				{Label: fmt.Sprintf("Snapshot from '%s'", sourceDB), Description: "Source has no tables — will run on an empty database", Value: "2"},
-				{Label: "migrate --seed", Description: "Fresh migrations and seeders, validates your migration files", Value: "3"},
-				{Label: "Skip", Description: "Leave the database empty", Value: "4"},
+				{Label: fmt.Sprintf("Schema only from '%s'", sourceDB), Description: "Source has no tables — will run on an empty database", Value: "3"},
+				{Label: fmt.Sprintf("Share '%s'", sourceDB), Description: "Reuse the main branch database, no copy", Value: "4"},
+				{Label: "Skip", Description: "Leave the database empty", Value: "5"},
 			}
 		}
 		dbChoice, _ := ui.Select("How to populate the database?", opts, "1")
 
-		switch dbChoice {
-		case "1":
-			if sourceHasTables {
-				if err := ui.Spin("Copying schema", func() error {
-					dump, err := docker.DBDump(dbInfo, sourceDB, true)
-					if err != nil {
-						return err
-					}
-					return docker.DBImport(dbInfo, dbName, dump)
-				}); err != nil {
-					ui.Error("Failed to copy schema: %v", err)
-				} else {
-					ui.Success("Schema copied")
-				}
-			} else {
-				ui.Warn("No tables in source — will migrate --seed after start")
-				runMigrateLater = true
+		if dbChoice == "4" {
+			dbName = sourceDB
+			ui.Success("Using shared database: %s", sourceDB)
+		} else {
+			ui.Info("Creating database: %s", dbName)
+			if err := docker.DBCreateDB(dbInfo, dbName); err != nil {
+				ui.Error("Failed to create database: %v", err)
 			}
-		case "2":
-			if sourceHasTables {
-				if err := ui.Spin("Copying schema + data", func() error {
-					dump, err := docker.DBDump(dbInfo, sourceDB, false)
-					if err != nil {
-						return err
-					}
-					return docker.DBImport(dbInfo, dbName, dump)
-				}); err != nil {
-					ui.Error("Failed to copy data: %v", err)
-				} else {
-					ui.Success("Full copy done")
-				}
-			} else {
-				ui.Warn("No tables in source — will migrate --seed after start")
+
+			switch dbChoice {
+			case "1":
 				runMigrateLater = true
+			case "2":
+				if sourceHasTables {
+					if err := ui.Spin("Copying schema + data", func() error {
+						dump, err := docker.DBDump(dbInfo, sourceDB, false)
+						if err != nil {
+							return err
+						}
+						return docker.DBImport(dbInfo, dbName, dump)
+					}); err != nil {
+						ui.Error("Failed to copy data: %v", err)
+					} else {
+						ui.Success("Full copy done")
+					}
+				} else {
+					ui.Warn("No tables in source — will migrate --seed after start")
+					runMigrateLater = true
+				}
+			case "3":
+				if sourceHasTables {
+					if err := ui.Spin("Copying schema", func() error {
+						dump, err := docker.DBDump(dbInfo, sourceDB, true)
+						if err != nil {
+							return err
+						}
+						return docker.DBImport(dbInfo, dbName, dump)
+					}); err != nil {
+						ui.Error("Failed to copy schema: %v", err)
+					} else {
+						ui.Success("Schema copied")
+					}
+				} else {
+					ui.Warn("No tables in source — will migrate --seed after start")
+					runMigrateLater = true
+				}
+			case "5":
+				ui.Info("Skipped")
 			}
-		case "3":
-			runMigrateLater = true
-		case "4":
-			ui.Info("Skipped")
 		}
 
 		if runMigrateLater {

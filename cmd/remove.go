@@ -88,8 +88,9 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Drop database
-	if dbName != "" {
+	// Drop database (skip if it's the main branch's shared database)
+	mainDB := env.Get(filepath.Join(root, ".env"), "DB_DATABASE", "")
+	if dbName != "" && dbName != mainDB {
 		dbInfo, dbErr := docker.DetectDB(root)
 		if dbErr == nil && docker.DBIsReachable(dbInfo) {
 			if err := ui.Spin(fmt.Sprintf("Dropping database: %s", dbName), func() error {
@@ -98,6 +99,8 @@ func runRemove(cmd *cobra.Command, args []string) error {
 				ui.Warn("Could not drop database: %v", err)
 			}
 		}
+	} else if dbName != "" && dbName == mainDB {
+		ui.Info("Skipping database drop — '%s' is the main branch database", dbName)
 	}
 
 	// Remove override file (best-effort)
