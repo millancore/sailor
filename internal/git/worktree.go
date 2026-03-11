@@ -1,7 +1,9 @@
 package git
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -70,13 +72,21 @@ func Add(root, targetDir, branch string) error {
 	return cmd.Run()
 }
 
-// Remove removes a git worktree.
+// Remove removes a git worktree. If `git worktree remove` fails, it falls
+// back to manual directory removal followed by `git worktree prune`.
 func Remove(root, targetDir string) error {
 	cmd := exec.Command("git", "-C", root, "worktree", "remove", targetDir, "--force")
 	if err := cmd.Run(); err != nil {
-		// Fallback: manual remove + prune
-		exec.Command("rm", "-rf", targetDir).Run()
-		return exec.Command("git", "-C", root, "worktree", "prune").Run()
+		var errs []error
+		if rmErr := os.RemoveAll(targetDir); rmErr != nil {
+			errs = append(errs, fmt.Errorf("failed to remove directory %s: %w", targetDir, rmErr))
+		}
+		if pruneErr := exec.Command("git", "-C", root, "worktree", "prune").Run(); pruneErr != nil {
+			errs = append(errs, fmt.Errorf("git worktree prune failed: %w", pruneErr))
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
 	}
 	return nil
 }
