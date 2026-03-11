@@ -346,8 +346,7 @@ func runInstall(dir, tool string) {
 	case "composer":
 		if _, err := os.Stat(filepath.Join(dir, "composer.json")); err == nil {
 			if err := ui.Spin("Running composer install", func() error {
-				cmd := fmt.Sprintf("cd %s && composer install --quiet 2>/dev/null", dir)
-				return execShell(cmd)
+				return execIn(dir, "composer", "install", "--quiet")
 			}); err != nil {
 				ui.Warn("composer install failed — run manually")
 			}
@@ -355,8 +354,7 @@ func runInstall(dir, tool string) {
 	case "npm":
 		if _, err := os.Stat(filepath.Join(dir, "package.json")); err == nil {
 			if err := ui.Spin("Running npm install", func() error {
-				cmd := fmt.Sprintf("cd %s && npm install --silent 2>/dev/null", dir)
-				return execShell(cmd)
+				return execIn(dir, "npm", "install", "--silent")
 			}); err != nil {
 				ui.Warn("npm install failed — run manually")
 			}
@@ -364,11 +362,10 @@ func runInstall(dir, tool string) {
 	}
 }
 
-func execShell(command string) error {
-	c := exec.Command("sh", "-c", command)
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return c.Run()
+func execIn(dir, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	return cmd.Run()
 }
 
 func addToGitignore(root string, entries ...string) {
