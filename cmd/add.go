@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/millancore/sailor/internal/deps"
@@ -18,6 +20,7 @@ import (
 const (
 	baseAppPort  = 8080
 	baseVitePort = 5174
+	maxPort      = 65535
 )
 
 var addCmd = &cobra.Command{
@@ -210,7 +213,10 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// ── 4. Configure .env ──
 	ui.Step(4, 5, "Configuring .env")
 
-	appPort, vitePort := allocatePorts(root)
+	appPort, vitePort, err := allocatePorts(root)
+	if err != nil {
+		return fmt.Errorf("port allocation failed: %w", err)
+	}
 
 	envSrc := filepath.Join(root, ".env")
 	envDst := filepath.Join(absTarget, ".env")
@@ -269,47 +275,69 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// allocatePorts scans existing worktree .env files to find unused ports.
-func allocatePorts(root string) (appPort, vitePort int) {
+// allocatePorts scans existing worktree .env files and checks system
+// availability to find unused ports within the valid range.
+func allocatePorts(root string) (appPort, vitePort int, err error) {
 	usedApp := make(map[int]bool)
 	usedVite := make(map[int]bool)
 
-	worktrees, err := git.ListWorktrees()
+	worktrees, wtErr := git.ListWorktrees()
+	if wtErr == nil {
+		for _, wt := range worktrees {
+			if wt.Path == root {
+				continue
+			}
+			envPath := filepath.Join(wt.Path, ".env")
+			vals, err := env.Read(envPath)
+			if err != nil {
+				continue
+			}
+			if p := parsePort(vals["APP_PORT"]); p > 0 {
+				usedApp[p] = true
+			}
+			if p := parsePort(vals["VITE_PORT"]); p > 0 {
+				usedVite[p] = true
+			}
+		}
+	}
+
+	appPort, err = findAvailablePort(baseAppPort, usedApp)
 	if err != nil {
-		return baseAppPort, baseVitePort
+		return 0, 0, fmt.Errorf("APP_PORT: %w", err)
 	}
+	vitePort, err = findAvailablePort(baseVitePort, usedVite)
+	if err != nil {
+		return 0, 0, fmt.Errorf("VITE_PORT: %w", err)
+	}
+	return appPort, vitePort, nil
+}
 
-	for _, wt := range worktrees {
-		if wt.Path == root {
+// findAvailablePort returns the first port starting from base that is not in
+// the used set and is not already bound on the system.
+func findAvailablePort(base int, used map[int]bool) (int, error) {
+	for port := base; port <= maxPort; port++ {
+		if used[port] {
 			continue
 		}
-		envPath := filepath.Join(wt.Path, ".env")
-		vals, err := env.Read(envPath)
-		if err != nil {
-			continue
-		}
-		if p := parsePort(vals["APP_PORT"]); p > 0 {
-			usedApp[p] = true
-		}
-		if p := parsePort(vals["VITE_PORT"]); p > 0 {
-			usedVite[p] = true
+		if portAvailable(port) {
+			return port, nil
 		}
 	}
+	return 0, fmt.Errorf("no available port found in range %d–%d", base, maxPort)
+}
 
-	appPort = baseAppPort
-	for usedApp[appPort] {
-		appPort++
+// portAvailable checks whether a TCP port is free on localhost.
+func portAvailable(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false
 	}
-	vitePort = baseVitePort
-	for usedVite[vitePort] {
-		vitePort++
-	}
-	return
+	ln.Close()
+	return true
 }
 
 func parsePort(s string) int {
-	var p int
-	fmt.Sscanf(s, "%d", &p)
+	p, _ := strconv.Atoi(strings.TrimSpace(s))
 	return p
 }
 
